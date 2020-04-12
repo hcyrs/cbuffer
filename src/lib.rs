@@ -2,7 +2,7 @@ extern crate  libc;
 
 mod cbuffer_raw;
 
-pub use cbuffer_raw::{channel, BufferSize};
+pub use cbuffer_raw::{channel, BufferSize, Sender, Receiver};
 
 #[cfg(test)]
 mod tests {
