@@ -169,7 +169,7 @@ impl CBuffer {
             return false;
         }
         let tail = self.tail.load() as usize;
-        self.writable_slice()[..size].copy_from_slice(data);
+        self.writable_slice(size).copy_from_slice(data);
         // let _n = cbuffer_raw::rs_offer(&mut unsafe { *self.inner }, data, tail);
         if self.capacity < tail + size {
             self.tail.store(((tail + size) % self.capacity) as u32);
@@ -196,8 +196,7 @@ impl CBuffer {
             return None;
         }
         let head = self.head.load() as usize;
-        let r = self.readable_slice()[..len].to_vec();
-        // let r = Some(cbuffer_raw::rs_poll(&unsafe { *self.inner }, len, head));
+        let r = self.readable_slice(len).to_vec();
         self.head.store((len + head) as u32);
         Some(r)
     }
@@ -226,17 +225,17 @@ impl CBuffer {
         self.capacity - self.used()
     }
 
-    fn readable_slice(&self) -> &[u8] {
+    fn readable_slice(&self, len: usize) -> &[u8] {
         unsafe {
             slice::from_raw_parts(self.pointer.as_ptr().offset(self.head.load() as isize),
-                                  self.used())
+                                  len)
         }
     }
 
-    fn writable_slice(&mut self) -> &mut [u8] {
+    fn writable_slice(&mut self, len: usize) -> &mut [u8] {
         unsafe {
             slice::from_raw_parts_mut(self.pointer.as_ptr().offset(self.tail.load() as isize),
-                                      self.unused())
+                                      len)
         }
     }
 }
