@@ -146,8 +146,8 @@ impl CBuffer {
             Ok(CBuffer {
                 capacity,
                 pointer: ptr::NonNull::new(primary as *mut u8).ok_or(Error::OS).unwrap(),
-                head: Default::default(),
-                tail: Default::default(),
+                head: AtomicCell::new(0u32),
+                tail: AtomicCell::new(0u32),
             })
         }
     }
