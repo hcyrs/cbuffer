@@ -10,7 +10,7 @@ use libc::{
 };
 use std::{ptr, slice};
 use std::cell::UnsafeCell;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct Sender {
     inner: Arc<UnsafeCell<CBuffer>>,
@@ -44,10 +44,10 @@ impl Receiver {
         Receiver { inner }
     }
 
-    pub fn pop<F>(&self,mut consumer: F)
+    pub fn pop<F>(&mut self, consumer: F)
         where F: FnMut(&[u8]) -> ()
     {
-        unsafe { (*self.inner.get()).pop(consumer) }
+        unsafe { (*self.inner.get()).pop(consumer)}
     }
 }
 
@@ -62,7 +62,7 @@ pub enum Error {
 
 impl std::error::Error for Error {
     fn description(&self) -> &str { "cbuffer error" }
-    fn cause(&self) -> Option<& dyn std::error::Error> { None }
+    fn cause(&self) -> Option<&dyn std::error::Error> { None }
 }
 
 impl std::fmt::Display for Error {
@@ -100,8 +100,7 @@ pub fn page_size() -> usize {
 pub struct CBuffer {
     capacity: usize,
     pointer: ptr::NonNull<u8>,
-    head: AtomicCell<u32>,
-    tail: AtomicCell<u32>,
+    head_tail: Arc<Mutex<(u32, u32)>>,
 }
 
 unsafe impl Send for CBuffer {}
@@ -148,66 +147,95 @@ impl CBuffer {
             Ok(CBuffer {
                 capacity,
                 pointer: ptr::NonNull::new(primary as *mut u8).ok_or(Error::OS).unwrap(),
-                head: AtomicCell::new(0u32),
-                tail: AtomicCell::new(0u32),
+                head_tail: Arc::new(Mutex::new((0u32, 0u32))),
             })
         }
     }
 
-    pub fn push(&mut self, data: &[u8]) -> bool {
-        let size = data.len();
-        let tail = self.tail.load() as usize;
-        let head = self.head.load() as usize;
-        let used = if head <= tail {
-            (tail - head) as usize
-        } else {
-            self.capacity - (head as usize - tail as usize)
-        };
-        let unused = self.capacity - used;
 
-        if unused <= size + 4 {
+    pub fn push(&mut self, data: &[u8]) -> bool {
+        let data_len = data.len();
+        let size = (data_len + 4) as u32;
+        if self.unused() <= size as usize {
             return false;
         }
-        self.writable_slice(tail as isize, 4).copy_from_slice(&transform_u32_to_array_of_u8(size as u32));
-        self.writable_slice((tail + 4) as isize, size).copy_from_slice(data);
-        if self.capacity < (tail + size + 4) as usize {
-            self.tail.store(((tail + size + 4) as usize % self.capacity) as u32);
+        let ht = &self.head_tail;
+        let mut head_tail = ht.lock().unwrap();
+        let tail = head_tail.1;
+        self.writable_slice(tail as isize, 4).copy_from_slice(&transform_u32_to_array_of_u8(data_len as u32));
+        self.writable_slice((tail + 4) as isize, data_len).copy_from_slice(data);
+
+        if self.capacity < (tail + size) as usize {
+            // self.head_tail.store((head, ((tail + size) as usize % self.capacity) as u32));
+            head_tail.1 = ((tail + size) as usize % self.capacity) as u32;
         } else {
             // self.head_tail.store((head, tail + size));
-            self.tail.store((tail + size + 4) as u32);
+            head_tail.1 = tail + size;
         }
         true
     }
+    //
+    // fn offer(&mut self, data: &[u8]) -> bool {
+    //     let size = data.len();
+    //     if self.unused() <= size {
+    //         return false;
+    //     }
+    //     // let (head, tail) = self.head_tail.lock();
+    //     let mut head_tail = self.head_tail.lock().unwrap();
+    //     let tail = head_tail.1;
+    //     self.writable_slice(tail as isize, size).copy_from_slice(data);
+    //     // let _n = cbuffer_raw::rs_offer(&mut unsafe { *self.inner }, data, tail);
+    //     if self.capacity  < tail as usize + size {
+    //         // self.head_tail.store((head, ((tail as usize + size) % self.capacity) as u32));
+    //         // self.head_tail.store((head, ((tail + size) as usize % self.capacity) as u32));
+    //         head_tail.1 = ((tail as usize + size) % self.capacity) as u32;
+    //     } else {
+    //         // self.head_tail.store((head, (tail as usize + size) as u32));
+    //         // self.head_tail.store((head, tail + size));
+    //         head_tail.1 = tail + size as u32;
+    //     }
+    //     true
+    // }
 
     pub fn pop<F>(&self,mut consumer: F)
         where F: FnMut(&[u8]) -> ()
     {
-        let tail = self.tail.load() as usize;
-        let head = self.head.load() as usize;
-
-        if head == tail {
+        let mut head_tail = self.head_tail.lock().unwrap();
+        if head_tail.0 == head_tail.1 {
             return;
         }
-
+        let head = head_tail.0;
         let len = transform_array_of_u8_to_u32(self.readable_slice(head as isize, 4).to_vec().as_slice());
         let rt = self.readable_slice((head + 4) as isize, len as usize);
         consumer(rt);
-        self.tail.store(len + 4 + head as u32);
+        head_tail.0 = len + 4 + head as u32;
+        // self.head_tail.store((len + 4 + head as u32, tail));
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.tail.load() == self.head.load()
-    }
+    // fn poll(&self, len: usize) -> Option<Vec<u8>> {
+    //     let mut head_tail = self.head_tail.lock().unwrap();
+    //     if head_tail.0 == head_tail.1 {
+    //         return None;
+    //     }
+    //     let head = head_tail.0;
+    //     let r = self.readable_slice(head as isize, len).to_vec();
+    //     head_tail.0 = len as u32 + head;
+    //     // self.head_tail.store(((len + head as usize) as u32, tail));
+    //     Some(r)
+    // }
+
+    // pub fn is_empty(&self) -> bool {
+    //     let (head, tail) = self.head_tail.load();
+    //     head == tail
+    // }
 
     pub fn size(&self) -> usize {
         self.capacity
     }
 
     pub fn used(&self) -> usize {
-        let (head, tail) = {
-            (self.head.load(),
-             self.tail.load())
-        };
+        let head_tail = self.head_tail.lock().unwrap();
+        let (head, tail) = (head_tail.0, head_tail.1);
         if head <= tail {
             (tail - head) as usize
         } else {
@@ -238,8 +266,8 @@ impl Drop for CBuffer {
             // It's not clear what makes the most sense for handling
             // errors in `drop`, but the consensus seems to be either
             // ignore the error, or panic.
-            if munmap(self.pointer.as_ptr().offset(0) as *mut c_void, 2*self.capacity) < 0 {
-                panic!("munmap({:p}, {}) failed", self.pointer, 2*self.capacity)
+            if munmap(self.pointer.as_ptr().offset(0) as *mut c_void, 2 * self.capacity) < 0 {
+                panic!("munmap({:p}, {}) failed", self.pointer, 2 * self.capacity)
             }
         }
     }
@@ -261,7 +289,6 @@ fn transform_array_of_u8_to_u32(x: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
-
     #[test]
     fn test_new() {
         use super::{CBuffer, BufferSize};
@@ -269,4 +296,32 @@ mod tests {
         assert_eq!(134217728usize, b.size());
         assert_eq!(0usize, b.used());
     }
+/*
+    #[test]
+    fn test_offer() {
+        use super::{CBuffer, BufferSize};
+        let mut b = CBuffer::with_capacity(BufferSize::Buf128M).unwrap();
+        // let (head,tail) = b.head_tail.load();
+        b.offer(b"12");
+        b.offer(b"34");
+        let head_tail = b.head_tail.lock().unwrap();
+        let (head ,tail) = (head_tail.0, head_tail.1);
+        println!("used: {}, tail: {:?}, head: {:?}", b.used(), tail, head);
+        assert_eq!(Some(b"12".to_vec()), b.poll(2));
+        assert_eq!(Some(b"34".to_vec()), b.poll(2));
+    }
+
+    #[test]
+    fn test_push() {
+        use super::{CBuffer, BufferSize};
+        let mut b = CBuffer::with_capacity(BufferSize::Buf128M).unwrap();
+        b.push(b"12AB");
+        b.push(b"acefg");
+        b.pop(|bytes|{
+            assert_eq!(b"12AB", bytes);
+        });
+        b.pop(|bytes|{
+            assert_eq!(b"acefg", bytes);
+        });
+    }*/
 }
