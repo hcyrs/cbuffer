@@ -2,7 +2,6 @@
 
 use crossbeam::atomic::AtomicCell;
 use byteorder::{ByteOrder, LittleEndian};
-use std::{ptr, slice};
 use std::cell::UnsafeCell;
 use std::sync::Arc;
 
@@ -38,7 +37,7 @@ impl Receiver {
         Receiver { inner }
     }
 
-    pub fn pop<F>(&self, mut consumer: F)
+    pub fn pop<F>(&self, consumer: F)
         where F: FnMut(&[u8]) -> ()
     {
         unsafe { (*self.inner.get()).pop(consumer) }
@@ -148,7 +147,7 @@ impl CBuffer {
         true
     }
 
-    pub fn pop<F>(&self, mut consumer: F)
+    pub fn pop<F>(&self, consumer: F)
         where F: FnMut(&[u8]) -> ()
     {
         let tail = self.tail.load() as usize;
@@ -159,7 +158,7 @@ impl CBuffer {
         }
 
         let len = self.read_length(head, 4);
-        self.read((head + 4), len as usize, consumer);
+        self.read(head + 4, len as usize, consumer);
         self.tail.store(len + 4 + head as u32);
     }
 
@@ -204,9 +203,7 @@ impl CBuffer {
         if self.v.len() < tail + len {
             self.v.extend_from_slice(data);
         } else {
-            unsafe {
-                &mut self.v.as_mut_slice()[w..w + len].copy_from_slice(data);
-            }
+            &mut self.v.as_mut_slice()[w..w + len].copy_from_slice(data);
         }
     }
 }
