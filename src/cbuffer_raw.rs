@@ -11,6 +11,7 @@ use libc::{
 use std::{ptr, slice};
 use std::cell::UnsafeCell;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub struct Sender {
     inner: Arc<UnsafeCell<CBuffer>>,
@@ -34,8 +35,14 @@ impl Sender {
         Sender { inner }
     }
 
-    pub fn push(&mut self, elem: &[u8]) -> bool {
+    pub fn try_push(&mut self, elem: &[u8]) -> bool {
         unsafe { (*self.inner.get()).push(elem) }
+    }
+
+    pub fn push(&mut self, elem: &[u8]) {
+        if !unsafe { (*self.inner.get()).push(elem) } {
+            std::thread::sleep(Duration::from_micros(5));
+        }
     }
 }
 
@@ -44,10 +51,18 @@ impl Receiver {
         Receiver { inner }
     }
 
-    pub fn pop<F>(&self,mut consumer: F)
+    pub fn try_pop<F>(&self, consumer: F) -> bool
         where F: FnMut(&[u8]) -> ()
     {
         unsafe { (*self.inner.get()).pop(consumer) }
+    }
+
+    pub fn pop<F>(&self, consumer: F)
+        where F: FnMut(&[u8]) -> ()
+    {
+        if !unsafe { (*self.inner.get()).pop(consumer) } {
+            std::thread::sleep(Duration::from_micros(5));
+        }
     }
 }
 
@@ -179,20 +194,21 @@ impl CBuffer {
         true
     }
 
-    pub fn pop<F>(&self,mut consumer: F)
+    pub fn pop<F>(&self, mut consumer: F) -> bool
         where F: FnMut(&[u8]) -> ()
     {
         let tail = self.tail.load() as usize;
         let head = self.head.load() as usize;
 
         if head == tail {
-            return;
+            return false;
         }
 
         let len = transform_array_of_u8_to_u32(self.readable_slice(head as isize, 4).to_vec().as_slice());
         let rt = self.readable_slice((head + 4) as isize, len as usize);
         consumer(rt);
         self.tail.store(len + 4 + head as u32);
+        true
     }
 
     pub fn is_empty(&self) -> bool {
