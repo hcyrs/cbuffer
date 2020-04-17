@@ -4,6 +4,7 @@ use crossbeam::atomic::AtomicCell;
 use byteorder::{ByteOrder, LittleEndian};
 use std::cell::UnsafeCell;
 use std::sync::Arc;
+use std::ops::{Deref, DerefMut};
 
 pub struct Sender {
     inner: Arc<UnsafeCell<CBuffer>>,
@@ -88,7 +89,7 @@ pub enum BufferSize {
 
 pub struct CBuffer {
     capacity: usize,
-    v: Vec<u8>,
+    v: Box<[u8]>,
     head: AtomicCell<u32>,
     tail: AtomicCell<u32>,
 }
@@ -113,10 +114,11 @@ impl CBuffer {
                 512 * 1024 * 1024usize
             }
         };
+        let b = vec![0u8; 2 * capacity].into_boxed_slice();
 
         Ok(CBuffer {
             capacity,
-            v: Vec::with_capacity(2 * capacity),
+            v: b,
             head: AtomicCell::new(0u32),
             tail: AtomicCell::new(0u32),
         })
@@ -190,21 +192,17 @@ impl CBuffer {
         where F: FnMut(&[u8]) -> ()
     {
         let r = head;
-        consumer(&self.v.as_slice()[r..r + len]);
+        consumer(&self.v.deref()[r..r + len]);
     }
 
     fn read_length(&self, head: usize, len: usize) -> u32 {
         let r = head;
-        transform_array_of_u8_to_u32(&self.v.as_slice()[r..r + len])
+        transform_array_of_u8_to_u32(&self.v.deref()[r..r + len])
     }
 
     fn write(&mut self, tail: usize, len: usize, data: &[u8]) {
         let w = tail;
-        if self.v.len() < tail + len {
-            self.v.extend_from_slice(data);
-        } else {
-            &mut self.v.as_mut_slice()[w..w + len].copy_from_slice(data);
-        }
+        &mut self.v.deref_mut()[w..w + len].copy_from_slice(data);
     }
 }
 
