@@ -2,12 +2,6 @@
 
 use crossbeam::atomic::AtomicCell;
 use byteorder::{ByteOrder, LittleEndian};
-use libc::{
-    c_void,
-    mmap, munmap,
-    MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_PRIVATE, MAP_SHARED,
-    PROT_NONE, PROT_READ, PROT_WRITE,
-};
 use std::{ptr, slice};
 use std::cell::UnsafeCell;
 use std::sync::Arc;
@@ -44,7 +38,7 @@ impl Receiver {
         Receiver { inner }
     }
 
-    pub fn pop<F>(&self,mut consumer: F)
+    pub fn pop<F>(&self, mut consumer: F)
         where F: FnMut(&[u8]) -> ()
     {
         unsafe { (*self.inner.get()).pop(consumer) }
@@ -62,7 +56,7 @@ pub enum Error {
 
 impl std::error::Error for Error {
     fn description(&self) -> &str { "cbuffer error" }
-    fn cause(&self) -> Option<& dyn std::error::Error> { None }
+    fn cause(&self) -> Option<&dyn std::error::Error> { None }
 }
 
 impl std::fmt::Display for Error {
@@ -93,13 +87,9 @@ pub enum BufferSize {
     Buf512M,
 }
 
-pub fn page_size() -> usize {
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
-}
-
 pub struct CBuffer {
     capacity: usize,
-    pointer: ptr::NonNull<u8>,
+    v: Vec<u8>,
     head: AtomicCell<u32>,
     tail: AtomicCell<u32>,
 }
@@ -125,33 +115,12 @@ impl CBuffer {
             }
         };
 
-        unsafe {
-            let checked_mmap = |ptr, size, prot, flags| {
-                let p = mmap(ptr, size, prot, flags, -1, 0);
-                if p == MAP_FAILED { return Err(Error::OS); }
-                Ok(p)
-            };
-
-            let base_pointer = checked_mmap(ptr::null_mut(),
-                                            2 * capacity,
-                                            PROT_NONE,
-                                            MAP_ANONYMOUS | MAP_PRIVATE)?;
-            let primary = checked_mmap(base_pointer,
-                                       capacity,
-                                       PROT_READ | PROT_WRITE,
-                                       MAP_FIXED | MAP_SHARED | MAP_ANONYMOUS)?;
-            checked_mmap(base_pointer.offset(capacity as isize),
-                         capacity,
-                         PROT_READ | PROT_WRITE,
-                         MAP_FIXED | MAP_SHARED | MAP_ANONYMOUS)?;
-
-            Ok(CBuffer {
-                capacity,
-                pointer: ptr::NonNull::new(primary as *mut u8).ok_or(Error::OS).unwrap(),
-                head: AtomicCell::new(0u32),
-                tail: AtomicCell::new(0u32),
-            })
-        }
+        Ok(CBuffer {
+            capacity,
+            v: Vec::with_capacity(2 * capacity),
+            head: AtomicCell::new(0u32),
+            tail: AtomicCell::new(0u32),
+        })
     }
 
     pub fn push(&mut self, data: &[u8]) -> bool {
@@ -168,8 +137,8 @@ impl CBuffer {
         if unused <= size + 4 {
             return false;
         }
-        self.writable_slice(tail as isize, 4).copy_from_slice(&transform_u32_to_array_of_u8(size as u32));
-        self.writable_slice((tail + 4) as isize, size).copy_from_slice(data);
+        self.write(tail, 4, &transform_u32_to_array_of_u8(size as u32));
+        self.write(tail + 4, size, data);
         if self.capacity < (tail + size + 4) as usize {
             self.tail.store(((tail + size + 4) as usize % self.capacity) as u32);
         } else {
@@ -179,7 +148,7 @@ impl CBuffer {
         true
     }
 
-    pub fn pop<F>(&self,mut consumer: F)
+    pub fn pop<F>(&self, mut consumer: F)
         where F: FnMut(&[u8]) -> ()
     {
         let tail = self.tail.load() as usize;
@@ -189,9 +158,8 @@ impl CBuffer {
             return;
         }
 
-        let len = transform_array_of_u8_to_u32(self.readable_slice(head as isize, 4).to_vec().as_slice());
-        let rt = self.readable_slice((head + 4) as isize, len as usize);
-        consumer(rt);
+        let len = self.read_length(head, 4);
+        self.read((head + 4), len as usize, consumer);
         self.tail.store(len + 4 + head as u32);
     }
 
@@ -219,27 +187,25 @@ impl CBuffer {
         self.capacity - self.used()
     }
 
-    fn readable_slice(&self, head: isize, len: usize) -> &[u8] {
-        unsafe {
-            slice::from_raw_parts(self.pointer.as_ptr().offset(head), len)
-        }
+    fn read<F>(&self, head: usize, len: usize, mut consumer: F)
+        where F: FnMut(&[u8]) -> ()
+    {
+        let r = head;
+        consumer(&self.v.as_slice()[r..r + len]);
     }
 
-    fn writable_slice(&self, tail: isize, len: usize) -> &mut [u8] {
-        unsafe {
-            slice::from_raw_parts_mut(self.pointer.as_ptr().offset(tail), len)
-        }
+    fn read_length(&self, head: usize, len: usize) -> u32 {
+        let r = head;
+        transform_array_of_u8_to_u32(&self.v.as_slice()[r..r + len])
     }
-}
 
-impl Drop for CBuffer {
-    fn drop(&mut self) {
-        unsafe {
-            // It's not clear what makes the most sense for handling
-            // errors in `drop`, but the consensus seems to be either
-            // ignore the error, or panic.
-            if munmap(self.pointer.as_ptr().offset(0) as *mut c_void, 2*self.capacity) < 0 {
-                panic!("munmap({:p}, {}) failed", self.pointer, 2*self.capacity)
+    fn write(&mut self, tail: usize, len: usize, data: &[u8]) {
+        let w = tail;
+        if self.v.len() < tail + len {
+            self.v.extend_from_slice(data);
+        } else {
+            unsafe {
+                &mut self.v.as_mut_slice()[w..w + len].copy_from_slice(data);
             }
         }
     }
@@ -261,7 +227,6 @@ fn transform_array_of_u8_to_u32(x: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
-
     #[test]
     fn test_new() {
         use super::{CBuffer, BufferSize};

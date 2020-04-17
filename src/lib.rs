@@ -16,7 +16,7 @@ mod tests {
 
         let (mut sender, mut receiver) = channel(BufferSize::Buf128M);
 
-        let n = 5000000;
+        let n = 1_000_000;
 
         thread::spawn(move || {
             let begin = Local::now();
@@ -28,7 +28,7 @@ mod tests {
             }
             let end = Local::now();
             let a = end - begin;
-            println!("{}", a);
+            println!("sending speed: {}", (n as f32/a.num_microseconds().unwrap() as f32)*1000000f32);
         });
 
         thread::sleep(Duration::from_millis(5));
@@ -45,13 +45,12 @@ mod tests {
             });
 
             if do_break {
-                println!("-----n: {}", count);
                 break;
             }
         }
         let end = Local::now();
         let b = end - begin;
-        println!("{}", b);
-        println!("receive: {}", count);
+        println!("receiving speed: {}", (n as f32/b.num_microseconds().unwrap()as f32)*1000000f32);
+        println!("total number: {}", count);
     }
 }
