@@ -5,6 +5,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use std::cell::UnsafeCell;
 use std::sync::Arc;
 use std::ops::{Deref, DerefMut};
+use std::time::Duration;
 
 pub struct Sender {
     inner: Arc<UnsafeCell<CBuffer>>,
@@ -28,8 +29,14 @@ impl Sender {
         Sender { inner }
     }
 
-    pub fn push(&mut self, elem: &[u8]) -> bool {
+    pub fn try_push(&mut self, elem: &[u8]) -> bool {
         unsafe { (*self.inner.get()).push(elem) }
+    }
+
+    pub fn push(&mut self, elem: &[u8]) {
+        if !unsafe { (*self.inner.get()).push(elem) } {
+            std::thread::sleep(Duration::from_micros(5));
+        }
     }
 }
 
@@ -38,10 +45,18 @@ impl Receiver {
         Receiver { inner }
     }
 
-    pub fn pop<F>(&self, consumer: F)
+    pub fn try_pop<F>(&self, consumer: F) -> bool
         where F: FnMut(&[u8]) -> ()
     {
         unsafe { (*self.inner.get()).pop(consumer) }
+    }
+
+    pub fn pop<F>(&self, consumer: F)
+        where F: FnMut(&[u8]) -> ()
+    {
+        if !unsafe { (*self.inner.get()).pop(consumer) } {
+            std::thread::sleep(Duration::from_micros(5));
+        }
     }
 }
 
@@ -149,19 +164,20 @@ impl CBuffer {
         true
     }
 
-    pub fn pop<F>(&self, consumer: F)
+    pub fn pop<F>(&self, consumer: F) -> bool
         where F: FnMut(&[u8]) -> ()
     {
         let tail = self.tail.load() as usize;
         let head = self.head.load() as usize;
 
         if head == tail {
-            return;
+            return false;
         }
 
         let len = self.read_length(head, 4);
         self.read(head + 4, len as usize, consumer);
         self.tail.store(len + 4 + head as u32);
+        true
     }
 
     pub fn is_empty(&self) -> bool {
