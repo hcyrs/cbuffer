@@ -169,14 +169,13 @@ impl CBuffer {
     {
         let tail = self.tail.load() as usize;
         let head = self.head.load() as usize;
-
         if head == tail {
             return false;
         }
 
         let len = self.read_length(head, 4);
         self.read(head + 4, len as usize, consumer);
-        self.tail.store(len + 4 + head as u32);
+        self.head.store(len + 4 + head as u32);
         true
     }
 
@@ -238,6 +237,7 @@ fn transform_array_of_u8_to_u32(x: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+
     #[test]
     fn test_new() {
         use super::{CBuffer, BufferSize};
