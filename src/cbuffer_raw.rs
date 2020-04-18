@@ -199,15 +199,13 @@ impl CBuffer {
     {
         let tail = self.tail.load() as usize;
         let head = self.head.load() as usize;
-
         if head == tail {
             return false;
         }
-
         let len = transform_array_of_u8_to_u32(self.readable_slice(head as isize, 4).to_vec().as_slice());
         let rt = self.readable_slice((head + 4) as isize, len as usize);
         consumer(rt);
-        self.tail.store(len + 4 + head as u32);
+        self.head.store(len + 4 + head as u32);
         true
     }
 
