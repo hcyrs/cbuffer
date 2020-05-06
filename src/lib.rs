@@ -28,7 +28,7 @@ mod tests {
             }
             let end = Local::now();
             let a = end - begin;
-            println!("receiving speed: {}", (n as f32/a.num_microseconds().unwrap()as f32)*1000000f32);
+            println!("sending speed: {}", (n as f32/a.num_microseconds().unwrap()as f32)*1000000f32);
         });
 
         thread::sleep(Duration::from_millis(5));
